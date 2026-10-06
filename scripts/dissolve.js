@@ -758,8 +758,16 @@ class DissolveEffect {
           this.filterWrap = null;
         }
         if (this.fadeFallback) this.mesh.alpha = this.savedAlpha;
-        if (this.cfg.afterEffect === AFTER_EFFECTS.SHOW || !game.user?.isGM) {
-          // Non-GMs cannot change the document; never leave a locally invisible token behind.
+        // When the effect ends by hiding or deleting the token, keep the mesh
+        // invisible until the document update lands. Restoring visibility here
+        // would flash the full token for a frame or two (any refreshToken in
+        // the window re-shows it) before the hidden state applies.
+        const willVanish = success && game.user?.isGM
+          && (this.cfg.afterEffect === AFTER_EFFECTS.HIDE || this.cfg.afterEffect === AFTER_EFFECTS.DELETE);
+        if (willVanish) {
+          pendingVanish.add(String(this.doc.id));
+          this.mesh.visible = false;
+        } else {
           this.mesh.visible = true;
         }
       }
@@ -788,25 +796,48 @@ class DissolveEffect {
   _applyAfterEffect() {
     const after = this.cfg.afterEffect;
     if (after === AFTER_EFFECTS.SHOW) return;
-    if (!game.user?.isGM) return; // document mutations are GM business
+    if (!game.user?.isGM) {
+      // This client cannot mutate the document, so nothing will land; drop the
+      // vanish guard and put the token back.
+      pendingVanish.delete(String(this.doc.id));
+      try { if (this.mesh && !this.mesh.destroyed) this.mesh.visible = true; } catch (err) { /* gone */ }
+      return;
+    }
     try {
-      if (this.doc.hidden) return;
+      if (this.doc.hidden) {
+        pendingVanish.delete(String(this.doc.id));
+        return;
+      }
       if (after === AFTER_EFFECTS.HIDE) {
-        // If the update fails for any reason, undo the local invisibility.
-        Promise.resolve(this.doc.update({ hidden: true })).catch(() => {
-          try {
-            if (this.mesh && !this.mesh.destroyed) this.mesh.visible = true;
-          } catch (err) {
-            /* token already gone */
-          }
-        });
+        // The refreshToken guard keeps the mesh hidden until this lands; if the
+        // update fails, undo the local invisibility.
+        Promise.resolve(this.doc.update({ hidden: true }))
+          .catch(() => {
+            try {
+              if (this.mesh && !this.mesh.destroyed) this.mesh.visible = true;
+            } catch (err) {
+              /* token already gone */
+            }
+          })
+          .finally(() => pendingVanish.delete(String(this.doc.id)));
       } else if (after === AFTER_EFFECTS.DELETE) {
-        Promise.resolve(this.doc.delete()).catch((err) => {
-          warnLog(`afterEffect "delete" failed:`, err);
-        });
+        Promise.resolve(this.doc.delete())
+          .finally(() => pendingVanish.delete(String(this.doc.id)))
+          .catch((err) => {
+            warnLog(`afterEffect "delete" failed:`, err);
+          });
       }
     } catch (err) {
       warnLog(`afterEffect "${after}" failed:`, err);
+      pendingVanish.delete(String(this.doc.id));
     }
   }
 }
+
+/**
+ * Token ids whose dissolve finished and whose "hidden" document update is still
+ * in flight. While a token is here, refreshToken forces its mesh invisible so
+ * nothing (core refreshes, Ember, other modules) can flash the full token back
+ * before the hidden state applies.
+ */
+export const pendingVanish = new Set();

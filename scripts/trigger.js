@@ -16,7 +16,7 @@
 // The manual path is the Token HUD button plus the macro API (api.js).
 
 import { getSetting, TRIGGER_MODES, debugLog, warnLog } from "./settings.js";
-import { playEffect, isPlaying, cancelEffect, cancelAllEffects } from "./dissolve.js";
+import { playEffect, isPlaying, cancelEffect, cancelAllEffects, pendingVanish } from "./dissolve.js";
 import crucibleAdapter from "./systems/crucible.js";
 import genericAdapter from "./systems/generic.js";
 
@@ -47,6 +47,14 @@ export function initTriggers() {
   // Not "destroyScene" — that hook does not exist in v14; this is the
   // Foundry hook fired when the scene canvas is torn down.
   Hooks.on("canvasTearDown", () => cancelAllEffects("scene-torn-down"));
+  // While a dissolve's hide/delete update is in flight, every refresh re-forces
+  // the mesh invisible — otherwise anything that refreshes the token (core,
+  // Ember, other modules) flashes the full token back before hidden applies.
+  Hooks.on("refreshToken", (token) => {
+    if (pendingVanish.has(String(token?.id)) && token.mesh && !token.mesh.destroyed) {
+      token.mesh.visible = false;
+    }
+  });
 }
 
 /** deadStatus mode: an ActiveEffect carrying the dead status was created. */
