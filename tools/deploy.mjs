@@ -5,7 +5,7 @@
 //   node tools/deploy.mjs --copy      # copy files instead of linking
 //   node tools/deploy.mjs --remove    # remove the deployed link/copy
 //
-// The Foundry data path defaults to D:/TTRPG/FoundryVTT/V14 dev/Data_dev/Data
+// The Foundry data path defaults to D:/TTRPG/FoundryVTT/V14 dev/Data_Ember_Campaign/Data
 // and can be overridden with the FOUNDRY_DATA environment variable.
 
 import { existsSync, mkdirSync, rmSync, cpSync, symlinkSync } from "node:fs";
@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
 const args = new Set(process.argv.slice(2));
-const dataRoot = process.env.FOUNDRY_DATA ?? "D:/TTRPG/FoundryVTT/V14 dev/Data_dev/Data";
+const dataRoot = process.env.FOUNDRY_DATA ?? "D:/TTRPG/FoundryVTT/V14 dev/Data_Ember_Campaign/Data";
 const modulesDir = join(dataRoot, "modules");
 const target = join(modulesDir, "dust-to-dust");
 
