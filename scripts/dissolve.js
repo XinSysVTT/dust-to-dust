@@ -776,13 +776,16 @@ class DissolveEffect {
         const wantsVanish = success
           && (this.cfg.afterEffect === AFTER_EFFECTS.HIDE || this.cfg.afterEffect === AFTER_EFFECTS.DELETE);
         const canMutate = wantsVanish && canUpdateDocument(this.doc);
-        if (wantsVanish && canMutate) {
-          const id = String(this.doc.id);
-          vanished.add(id);
-          saveVanishedStore();
-          applyVanishToPlaceable(this.token ?? this.doc?.object);
+        if (wantsVanish) {
+          // Keep the placeable unrendered on this client until the document
+          // state lands (our own update, or the broadcast from the GM's).
+          // Once it lands, Foundry renders per document state: players see
+          // nothing, the GM sees the ghosted corpse. The corpse document
+          // itself always stays in the scene.
+          if (canMutate) this._applyAfterEffect();
+          else this._awaitVanishBroadcast();
         } else {
-          restorePlaceable(this.token ?? this.doc?.object);
+          restorePlaceable(this.token);
         }
       }
     } catch (err) {
@@ -806,45 +809,72 @@ class DissolveEffect {
     this.resolve = null;
   }
 
+  /**
+   * Wait for the hidden/deleted state to arrive via broadcast (the user could
+   * not issue the mutation themselves — e.g. a player triggering the effect
+   * with a GM online). Covers the same latency window as _applyAfterEffect;
+   * if nothing lands within a few seconds there is no GM to perform the
+   * mutation, so the token is restored.
+   */
+  _awaitVanishBroadcast() {
+    const id = String(this.doc?.id ?? "");
+    const onTokenUpdate = (doc) => {
+      if (String(doc?.id) !== id) return;
+      if (doc.hidden === true || doc === null) this._endVanishWait(true);
+    };
+    const onTokenDelete = (doc) => {
+      if (String(doc?.id) === id) this._endVanishWait(true);
+    };
+    Hooks.on("updateToken", onTokenUpdate);
+    Hooks.on("deleteToken", onTokenDelete);
+    this._vanishWaitHooks = [
+      ["updateToken", onTokenUpdate],
+      ["deleteToken", onTokenDelete],
+    ];
+    this._vanishWaitTimer = setTimeout(() => this._endVanishWait(false), 4000);
+  }
+
+  /** Release the broadcast wait: re-enable rendering; Foundry draws per doc state. */
+  _endVanishWait(landed) {
+    if (this._vanishWaitDone) return;
+    this._vanishWaitDone = true;
+    if (this._vanishWaitTimer) clearTimeout(this._vanishWaitTimer);
+    for (const [name, fn] of this._vanishWaitHooks ?? []) {
+      try { Hooks.off(name, fn); } catch (err) { /* already off */ }
+    }
+    this._vanishWaitHooks = null;
+    if (!landed) {
+      debugLog(`vanish broadcast never landed for token ${this.doc?.id ?? "?"}; restoring view`);
+    }
+    // Document state is authoritative now: players see nothing, the GM sees
+    // the ghosted corpse. Rendering returns to Foundry's control.
+    restorePlaceable(this.token ?? this.doc?.object);
+  }
+
   /** Apply the end-of-effect token mutation. Only for users who can mutate the document; never on early cancel. */
   _applyAfterEffect() {
     const after = this.cfg.afterEffect;
     const id = String(this.doc?.id ?? "");
     if (after === AFTER_EFFECTS.SHOW) return;
-    if (!canUpdateDocument(this.doc)) {
-      // This client cannot mutate the document, so no hidden state will ever
-      // land here; drop the vanish guard and put the token back.
-      vanished.delete(id);
-      saveVanishedStore();
-      restorePlaceable(this.doc?.object);
-      return;
-    }
     try {
-      if (this.doc.hidden) return; // already hidden; renderable stays off
+      if (this.doc.hidden) {
+        this._endVanishWait(true);
+        return;
+      }
       if (after === AFTER_EFFECTS.HIDE) {
-        // renderable=false is already applied, so nothing can flash while the
-        // update is in flight. If it fails, put the token back.
-        Promise.resolve(this.doc.update({ hidden: true })).catch(() => {
-          warnLog(`afterEffect "hide" failed; restoring token ${id}`);
-          vanished.delete(id);
-          saveVanishedStore();
-          restorePlaceable(this.doc?.object);
+        Promise.resolve(this.doc.update({ hidden: true })).catch((err) => {
+          warnLog(`afterEffect "hide" failed; restoring token ${id}`, err);
+          this._endVanishWait(false);
         });
       } else if (after === AFTER_EFFECTS.DELETE) {
-        Promise.resolve(this.doc.delete())
-          .then(() => { vanished.delete(id); saveVanishedStore(); })
-          .catch((err) => {
-            vanished.delete(id);
-            saveVanishedStore();
-            restorePlaceable(this.doc?.object);
-            warnLog(`afterEffect "delete" failed:`, err);
-          });
+        Promise.resolve(this.doc.delete()).catch((err) => {
+          warnLog(`afterEffect "delete" failed; restoring token ${id}`, err);
+          this._endVanishWait(false);
+        });
       }
     } catch (err) {
       warnLog(`afterEffect "${after}" failed:`, err);
-      vanished.delete(id);
-      saveVanishedStore();
-      restorePlaceable(this.doc?.object);
+      this._endVanishWait(false);
     }
   }
 }
@@ -862,19 +892,7 @@ function canUpdateDocument(doc) {
   }
 }
 
-/** Force a token placeable fully unrendered (mesh, icons, bars, everything). */
-function applyVanishToPlaceable(token) {
-  try {
-    if (!token || token.destroyed) return;
-    token.renderable = false;
-    token.visible = false;
-    if (token.mesh) token.mesh.visible = false;
-  } catch (err) {
-    debugLog("applyVanishToPlaceable failed:", err?.message ?? err);
-  }
-}
-
-/** Return a vanished token placeable to normal rendering. */
+/** Return a vanished token placeable to normal rendering (Foundry draws per doc state). */
 function restorePlaceable(token) {
   try {
     if (!token || token.destroyed) return;
@@ -884,51 +902,4 @@ function restorePlaceable(token) {
   } catch (err) {
     debugLog("restorePlaceable failed:", err?.message ?? err);
   }
-}
-
-/**
- * Token ids that have been dissolved and hidden. While the token document
- * stays hidden, the vanish rendering is re-applied on canvas load so nothing
- * (GM ghost view, status icons, Ember, other modules) brings it back. If
- * someone unhides the token, the guard releases it.
- */
-export const vanished = new Set();
-
-const VANISHED_STORE_KEY = (worldId) => `dust-to-dust.vanished.${worldId ?? "unknown"}`;
-
-/** Load persisted vanished token ids for this world and re-apply their hiding. */
-export function applyVanishedStore() {
-  try {
-    const raw = localStorage.getItem(VANISHED_STORE_KEY(game.world?.id));
-    if (!raw) return;
-    for (const id of JSON.parse(raw)) vanished.add(String(id));
-    for (const id of vanished) {
-      const tok = canvas?.tokens?.get(id);
-      if (tok && tok.document.hidden) applyVanishToPlaceable(tok);
-      else if (tok && !tok.document.hidden) {
-        vanished.delete(id); // user re-showed it in a previous session
-        saveVanishedStore();
-      }
-    }
-  } catch (err) {
-    debugLog("applyVanishedStore failed:", err?.message ?? err);
-  }
-}
-
-/** Persist the vanished token id set for this world. */
-function saveVanishedStore() {
-  try {
-    localStorage.setItem(VANISHED_STORE_KEY(game.world?.id), JSON.stringify([...vanished]));
-  } catch (err) {
-    debugLog("saveVanishedStore failed:", err?.message ?? err);
-  }
-}
-
-/** Remove a token id from the vanished set (token deleted or re-shown). */
-export function releaseVanished(id) {
-  const key = String(id ?? "");
-  if (!vanished.has(key)) return false;
-  vanished.delete(key);
-  saveVanishedStore();
-  return true;
 }

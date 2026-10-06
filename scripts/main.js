@@ -4,7 +4,6 @@
 import { MODULE_ID, registerSettings } from "./settings.js";
 import { initTriggers } from "./trigger.js";
 import { api } from "./api.js";
-import { applyVanishedStore } from "./dissolve.js";
 
 Hooks.once("init", () => {
   registerSettings();
@@ -17,7 +16,3 @@ Hooks.once("ready", () => {
   const mod = game.modules.get(MODULE_ID);
   if (mod) mod.api = api;
 });
-
-// Re-apply vanish rendering to dissolved tokens when a scene canvas loads,
-// so hidden corpses stay invisible across page reloads.
-Hooks.on("canvasReady", () => applyVanishedStore());
