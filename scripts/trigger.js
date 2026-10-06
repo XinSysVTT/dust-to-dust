@@ -146,10 +146,10 @@ function onRenderTokenHUD(hud, html, data) {
     if ($html.find(".dtd-dissolve").length) return;
     const label = game.i18n.localize("DUSTTODUST.HUD.Dissolve");
     const $btn = $(`<div class="control-icon dtd-dissolve" title="${label}" data-tooltip="${label}"><i class="fas fa-wind"></i></div>`);
-    let $host = $html.find("#token-hud .status-effects").first(); // v14 structure
-    if (!$host.length) $host = $html.find(".col.right .status-effects").first();
+    // v14: the right column is always visible; the status-effects palette is
+    // collapsible, so placing the button inside it would hide it by default.
+    let $host = $html.find(".col.right").first();
     if (!$host.length) $host = $html.find(".col.right .effects").first();
-    if (!$host.length) $host = $html.find(".col.right").first();
     if (!$host.length) $host = $html;
     $host.append($btn);
     $btn.on("click", (ev) => {

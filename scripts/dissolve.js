@@ -19,7 +19,7 @@
 // game never breaks.
 
 import { getSetting, DEFAULTS, SWEEP_DIRECTIONS, AFTER_EFFECTS, clampNumber, colorSetting, debugLog, warnLog } from "./settings.js";
-import { buildSample } from "./sampler.js";
+import { buildSample, resolveDisplayBox } from "./sampler.js";
 
 // ---------------------------------------------------------------------------
 // Tuning constants (effect shape; settings override the user-facing knobs)
@@ -339,6 +339,21 @@ function createParticleHost(maxCount, tint, texture) {
 }
 
 /**
+ * The ticker to drive the effect with. Foundry v14 renders through
+ * canvas.app.ticker (its own Ticker instance) and does NOT reliably tick
+ * PIXI.Ticker.shared — a shared-ticker callback fires only sporadically, so
+ * the effect clock must ride Foundry's application ticker.
+ */
+function effectTicker() {
+  try {
+    if (canvas?.app?.ticker) return canvas.app.ticker;
+  } catch (err) {
+    /* fall through */
+  }
+  return pixi()?.Ticker?.shared ?? null;
+}
+
+/**
  * Attach the particle container so it renders above all tokens.
  *
  * Foundry v14: token visuals are PrimarySpriteMeshes inside canvas.primary
@@ -392,27 +407,6 @@ function resolveTokenTarget(target) {
   return null;
 }
 
-/**
- * Resolve the token's displayed box in world coordinates: { x, y, w, h } with
- * x/y at the box TOP-LEFT.
- *
- * v9+ TokenDocument x/y are the token CENTER (core: `this.mesh.position =
- * this.center`), and the mesh may be scaled by the texture's scaleX/scaleY, so
- * the particle cloud and shader must use the mesh's actual displayed box —
- * doc.object.x + local offsets would shift the cloud by half a token, and
- * doc.w/doc.h would ignore texture scaling.
- */
-function resolveDisplayBox(doc) {
-  const mesh = doc?.object?.mesh;
-  const w = Math.max(1, Number(mesh?.width) || doc?.w || 100);
-  const h = Math.max(1, Number(mesh?.height) || doc?.h || 100);
-  const cx = Number(mesh?.position?.x);
-  const cy = Number(mesh?.position?.y);
-  const centerX = Number.isFinite(cx) ? cx : Number(doc?.x) || 0;
-  const centerY = Number.isFinite(cy) ? cy : Number(doc?.y) || 0;
-  return { x: centerX - w / 2, y: centerY - h / 2, w, h };
-}
-
 function buildConfig(overrides = {}) {
   const sweep = String(overrides.sweepDirection ?? getSetting("sweepDirection"));
   const after = String(overrides.afterEffect ?? getSetting("afterEffect"));
@@ -429,9 +423,9 @@ function buildConfig(overrides = {}) {
 }
 
 function targetParticleCount(doc, density) {
-  const grid = canvas?.grid?.size ?? 100;
-  const cells = (doc.w / grid) * (doc.h / grid);
-  const factor = Math.sqrt(Math.max(0.25, cells));
+  // v14: TokenDocument.width/height are grid SQUARES (w/h pixel getters are gone).
+  const cells = Math.max(0.25, Number(doc?.width) * Number(doc?.height) || 0.25);
+  const factor = Math.sqrt(cells);
   return Math.round(clampNumber(BASE_PARTICLES * factor * density, MIN_PARTICLES, MAX_PARTICLES));
 }
 
@@ -554,7 +548,7 @@ class DissolveEffect {
         this.finish(false, "token-not-on-canvas");
         return;
       }
-      this.box = resolveDisplayBox(this.doc);
+      this.box = resolveDisplayBox(this.doc, this.mesh);
       this.targetCount = targetParticleCount(this.doc, this.cfg.density);
       this._beginSample();
     } catch (err) {
@@ -572,6 +566,7 @@ class DissolveEffect {
     }
     if (this.finished) return;
     if (!this.sample || this.sample.count === 0) {
+      warnLog("no usable sample (token dimensions/texture unreadable); cancelling dissolve on", this.doc?.id);
       this.finish(false, "no-sample");
       return;
     }
@@ -584,6 +579,7 @@ class DissolveEffect {
       this.host = null;
     }
     if (!this.host || !attachContainer(this.host.container)) {
+      warnLog("particle host unavailable; cancelling dissolve on", this.doc?.id);
       this.finish(false, "no-particle-host");
       return;
     }
@@ -614,12 +610,13 @@ class DissolveEffect {
 
     // Single shared-ticker update loop, removed again in finish().
     this._tickFn = () => this.tick();
-    try {
-      pixi().Ticker.shared.add(this._tickFn);
-    } catch (err) {
-      warnLog("ticker unavailable:", err);
-      this.finish(false, "no-ticker");
-    }
+      const ticker = effectTicker();
+      if (!ticker) {
+        warnLog("no ticker available:", this.doc?.id);
+        this.finish(false, "no-ticker");
+        return;
+      }
+      ticker.add(this._tickFn);
   }
 
   tick() {
@@ -636,7 +633,7 @@ class DissolveEffect {
         return;
       }
 
-      const dt = Math.min(50, pixi().Ticker.shared.deltaMS || 16.7) / 1000;
+      const dt = Math.min(50, effectTicker()?.deltaMS || 16.7) / 1000;
       this.t += dt;
       const sweepT = Math.min(1, this.t / this.cfg.dissolveDuration);
       const effT = Math.min(1, sweepT * THRESHOLD_HEADROOM);
@@ -748,7 +745,7 @@ class DissolveEffect {
     this.finished = true;
 
     try {
-      if (this._tickFn) pixi()?.Ticker.shared.remove(this._tickFn);
+      if (this._tickFn) effectTicker()?.remove(this._tickFn);
     } catch (err) {
       /* already removed */
     }

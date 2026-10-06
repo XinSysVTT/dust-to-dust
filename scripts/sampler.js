@@ -75,11 +75,25 @@ function cachePut(key, value) {
  * Returns null when neither works.
  */
 async function textureToCanvas(texture) {
-  // Strategy 1: renderer extract.
+  // Strategy 1: renderer extract. Pixi 7.4's extract.canvas only accepts
+  // DisplayObjects/RenderTextures — a plain Texture throws — so wrap it in a
+  // throwaway sprite (the shared texture is not destroyed with it).
   try {
     const renderer = canvas?.app?.renderer ?? canvas?.renderer;
     if (renderer?.extract && texture) {
-      let out = renderer.extract.canvas(texture);
+      let out = null;
+      try {
+        out = renderer.extract.canvas(texture);
+      } catch (err) {
+        const PIXI = globalThis.PIXI;
+        if (PIXI?.Sprite) {
+          const sprite = new PIXI.Sprite(texture);
+          out = renderer.extract.canvas(sprite);
+          sprite.destroy({ texture: false, baseTexture: false, children: true });
+        } else {
+          throw err;
+        }
+      }
       if (out && typeof out.then === "function") out = await out;
       if (out && out.width > 0 && out.height > 0) return out;
     }
@@ -258,22 +272,58 @@ function finalize(raw, boxW, boxH, sweepMode, targetCount) {
 
 /**
  * Build the sweep-ordered sample for a token.
- * @param {TokenDocument} token  the token document (provides fallback w/h)
+ * @param {TokenDocument} token  the token document
  * @param {string} sweepMode     "up" | "down" | "inward"
  * @param {number} targetCount   desired particle count before emission
  * @param {PIXI.Sprite|null} [mesh]  the placeable's mesh (token.object.mesh);
  *        its texture is sampled and its displayed width/height (which reflect
- *        texture scale) define the sampling box, falling back to doc.w/doc.h
+ *        texture scale) define the sampling box
  * @returns {Promise<{xs: Float32Array, ys: Float32Array, orders: Float32Array, sizes: Float32Array, count: number}>}
  */
+/**
+ * Resolve a token's displayed footprint in world pixels.
+ * Foundry v14 TokenDocuments have no w/h pixel getters: `width`/`height` are
+ * grid squares. The mesh's width/height are pixels and include texture scale,
+ * so they win; document squares × grid size is the fallback.
+ * @param {TokenDocument} doc
+ * @param {PIXI.Sprite|null} [mesh]
+ * @returns {{w: number, h: number}}
+ */
+export function resolveTokenBox(doc, mesh = doc?.object?.mesh ?? null) {
+  const grid = canvas?.grid?.size ?? 100;
+  const w = Math.max(1, Number(mesh?.width) || Number(doc?.width) * grid || grid);
+  const h = Math.max(1, Number(mesh?.height) || Number(doc?.height) * grid || grid);
+  return { w, h };
+}
+
+/**
+ * Resolve the token's displayed box as world-pixel top-left + size.
+ * v9+ TokenDocument x/y (and the mesh position) are CENTER coordinates, and
+ * the mesh may be scaled by the texture's scaleX/scaleY, so the particle
+ * cloud and shader must use the mesh's actual displayed box —
+ * doc.object.x + local offsets would shift the cloud by half a token.
+ * @param {TokenDocument} doc
+ * @param {PIXI.Sprite|null} [mesh]
+ * @returns {{x: number, y: number, w: number, h: number}}
+ */
+export function resolveDisplayBox(doc, mesh = doc?.object?.mesh ?? null) {
+  const { w, h } = resolveTokenBox(doc, mesh);
+  const cx = Number(mesh?.position?.x);
+  const cy = Number(mesh?.position?.y);
+  const centerX = Number.isFinite(cx) ? cx : Number(doc?.x) || 0;
+  const centerY = Number.isFinite(cy) ? cy : Number(doc?.y) || 0;
+  return { x: centerX - w / 2, y: centerY - h / 2, w, h };
+}
+
 export async function buildSample(token, sweepMode, targetCount, mesh = null) {
   const empty = { xs: new Float32Array(0), ys: new Float32Array(0), orders: new Float32Array(0), sizes: new Float32Array(0), count: 0 };
   try {
-    if (!token || !Number.isFinite(token.w) || !Number.isFinite(token.h) || token.w <= 0 || token.h <= 0) return empty;
     // The mesh lives on the placeable, not the document. Resolve it defensively.
     const placeableMesh = mesh ?? token.object?.mesh ?? null;
-    const boxW = Math.max(1, Number(placeableMesh?.width) || token.w);
-    const boxH = Math.max(1, Number(placeableMesh?.height) || token.h);
+    const box = resolveTokenBox(token, placeableMesh);
+    if (!token || !Number.isFinite(box.w) || !Number.isFinite(box.h)) return empty;
+    const boxW = box.w;
+    const boxH = box.h;
     const texture = placeableMesh?.texture ?? null;
     const key = texture ? cacheKeyFor(boxW, boxH, texture) : null;
     let raw = cacheGet(key);
@@ -291,9 +341,8 @@ export async function buildSample(token, sweepMode, targetCount, mesh = null) {
     debugLog("buildSample failed; using disc fallback:", err?.message ?? err);
     try {
       const placeableMesh = mesh ?? token.object?.mesh ?? null;
-      const boxW = Math.max(1, Number(placeableMesh?.width) || token.w);
-      const boxH = Math.max(1, Number(placeableMesh?.height) || token.h);
-      return finalize(discSample(boxW, boxH, targetCount), boxW, boxH, sweepMode, Math.max(8, Math.round(targetCount)));
+      const box = resolveTokenBox(token, placeableMesh);
+      return finalize(discSample(box.w, box.h, targetCount), box.w, box.h, sweepMode, Math.max(8, Math.round(targetCount)));
     } catch (err2) {
       debugLog("disc fallback failed:", err2?.message ?? err2);
       return empty;
