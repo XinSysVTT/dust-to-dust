@@ -862,15 +862,19 @@ class DissolveEffect {
         return;
       }
       if (after === AFTER_EFFECTS.HIDE) {
-        Promise.resolve(this.doc.update({ hidden: true })).catch((err) => {
-          warnLog(`afterEffect "hide" failed; restoring token ${id}`, err);
-          this._endVanishWait(false);
-        });
+        Promise.resolve(this.doc.update({ hidden: true }))
+          .then(() => this._endVanishWait(true))
+          .catch((err) => {
+            warnLog(`afterEffect "hide" failed; restoring token ${id}`, err);
+            this._endVanishWait(false);
+          });
       } else if (after === AFTER_EFFECTS.DELETE) {
-        Promise.resolve(this.doc.delete()).catch((err) => {
-          warnLog(`afterEffect "delete" failed; restoring token ${id}`, err);
-          this._endVanishWait(false);
-        });
+        Promise.resolve(this.doc.delete())
+          .then(() => this._endVanishWait(true))
+          .catch((err) => {
+            warnLog(`afterEffect "delete" failed; restoring token ${id}`, err);
+            this._endVanishWait(false);
+          });
       }
     } catch (err) {
       warnLog(`afterEffect "${after}" failed:`, err);
