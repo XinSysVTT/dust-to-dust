@@ -4,7 +4,7 @@
   "description": "A Frieren-style death animation for tokens: on death, the body crumbles edge-to-edge into matte black dust that lingers a beat, then the wind scatters it away. First-class support for the Crucible system; other systems work through a generic adapter.",
   "version": "0.1.0",
   "compatibility": {
-    "minimum": "14",
+    "minimum": "14.366",
     "verified": "14.368",
     "maximum": "14"
   },

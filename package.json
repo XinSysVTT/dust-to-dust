@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Frieren-style dissolve-into-black-dust death animation for FoundryVTT tokens (Crucible-first).",
   "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
     "check": "node --check scripts/main.js && node --check scripts/api.js && node --check scripts/settings.js && node --check scripts/sampler.js && node --check scripts/dissolve.js && node --check scripts/trigger.js && node --check scripts/systems/crucible.js && node --check scripts/systems/generic.js",
     "deploy": "node tools/deploy.mjs"
   }

@@ -9,7 +9,7 @@
 // and can be overridden with the FOUNDRY_DATA environment variable.
 
 import { existsSync, mkdirSync, rmSync, cpSync, symlinkSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -18,6 +18,18 @@ const args = new Set(process.argv.slice(2));
 const dataRoot = process.env.FOUNDRY_DATA ?? "C:/Users/vilks/AppData/Local/FoundryVTT";
 const modulesDir = join(dataRoot, "modules");
 const target = join(modulesDir, "dust-to-dust");
+
+/**
+ * cpSync filter. path.relative() yields OS-native separators, so split on both
+ * to reliably keep .git and archives out of the copy on Windows and POSIX.
+ */
+function keepForCopy(src) {
+  const rel = relative(repoRoot, src);
+  if (rel === "") return true; // the repo root itself
+  if (rel.split(/[\\/]/).includes(".git")) return false;
+  if (rel.endsWith(".zip")) return false;
+  return true;
+}
 
 function remove() {
   if (!existsSync(target)) {
@@ -39,10 +51,7 @@ if (!existsSync(modulesDir)) {
 
 if (args.has("--copy")) {
   remove();
-  cpSync(repoRoot, target, {
-    recursive: true,
-    filter: (src) => !src.includes(`${repoRoot}/.git`) && !src.endsWith(".zip"),
-  });
+  cpSync(repoRoot, target, { recursive: true, filter: keepForCopy });
   console.log(`Copied module to ${target}`);
   process.exit(0);
 }
@@ -57,9 +66,6 @@ try {
   console.log(`Junction created: ${target} -> ${repoRoot}`);
 } catch (err) {
   console.error(`Junction failed (${err.message}); falling back to a copy.`);
-  cpSync(repoRoot, target, {
-    recursive: true,
-    filter: (src) => !src.includes(`${repoRoot}/.git`) && !src.endsWith(".zip"),
-  });
+  cpSync(repoRoot, target, { recursive: true, filter: keepForCopy });
   console.log(`Copied module to ${target}`);
 }

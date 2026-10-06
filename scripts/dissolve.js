@@ -70,9 +70,9 @@ void main() {
   } else if (uMode < 1.5) {
     order = uv.y;                             // "down": top edge first
   } else {
-    vec2 c = uv - 0.5;                        // "inward": rim first
+    vec2 c = uv - 0.5;                        // "inward": rim first, center last
     c.x *= uSize.x / max(uSize.y, 1.0);
-    order = clamp(length(c) * 1.41421356, 0.0, 1.0);
+    order = 1.0 - clamp(length(c) * 1.41421356, 0.0, 1.0);
   }
   float n = dtdHash(floor(uv * uSize) + 0.5); // per-pixel dither
   float f = clamp(order * (1.0 - uJitter) + n * uJitter, 0.0, 1.0);
@@ -131,7 +131,7 @@ void main(void) {
   } else {
     vec2 c = uv - 0.5;
     c.x *= uSize.x / max(uSize.y, 1.0);
-    order = clamp(length(c) * 1.41421356, 0.0, 1.0);
+    order = 1.0 - clamp(length(c) * 1.41421356, 0.0, 1.0); // rim first, center last
   }
   float n = dtdHash(floor(uv * uSize) + 0.5);
   float f = clamp(order * (1.0 - uJitter) + n * uJitter, 0.0, 1.0);
@@ -392,6 +392,27 @@ function resolveTokenTarget(target) {
   return null;
 }
 
+/**
+ * Resolve the token's displayed box in world coordinates: { x, y, w, h } with
+ * x/y at the box TOP-LEFT.
+ *
+ * v9+ TokenDocument x/y are the token CENTER (core: `this.mesh.position =
+ * this.center`), and the mesh may be scaled by the texture's scaleX/scaleY, so
+ * the particle cloud and shader must use the mesh's actual displayed box —
+ * doc.object.x + local offsets would shift the cloud by half a token, and
+ * doc.w/doc.h would ignore texture scaling.
+ */
+function resolveDisplayBox(doc) {
+  const mesh = doc?.object?.mesh;
+  const w = Math.max(1, Number(mesh?.width) || doc?.w || 100);
+  const h = Math.max(1, Number(mesh?.height) || doc?.h || 100);
+  const cx = Number(mesh?.position?.x);
+  const cy = Number(mesh?.position?.y);
+  const centerX = Number.isFinite(cx) ? cx : Number(doc?.x) || 0;
+  const centerY = Number.isFinite(cy) ? cy : Number(doc?.y) || 0;
+  return { x: centerX - w / 2, y: centerY - h / 2, w, h };
+}
+
 function buildConfig(overrides = {}) {
   const sweep = String(overrides.sweepDirection ?? getSetting("sweepDirection"));
   const after = String(overrides.afterEffect ?? getSetting("afterEffect"));
@@ -439,7 +460,7 @@ export function isPlaying(tokenId) {
  */
 export async function playEffect(target, overrides = {}) {
   try {
-    if (!canvas?.ready && !canvas?.tokens) {
+    if (!canvas?.ready || !canvas?.tokens) {
       try {
         ui?.notifications?.warn(game.i18n.localize("DUSTTODUST.NOTIFICATIONS.NoCanvas"));
       } catch (err) {
@@ -509,6 +530,7 @@ class DissolveEffect {
     this.meshHidden = false;
     this.fadeFallback = false;
     this.mesh = null;
+    this.box = null;
     this.sample = null;
     this.host = null;
     this.filterWrap = null;
@@ -532,6 +554,7 @@ class DissolveEffect {
         this.finish(false, "token-not-on-canvas");
         return;
       }
+      this.box = resolveDisplayBox(this.doc);
       this.targetCount = targetParticleCount(this.doc, this.cfg.density);
       this._beginSample();
     } catch (err) {
@@ -542,7 +565,7 @@ class DissolveEffect {
 
   async _beginSample() {
     try {
-      this.sample = await buildSample(this.doc, this.cfg.sweep, this.targetCount);
+      this.sample = await buildSample(this.doc, this.cfg.sweep, this.targetCount, this.mesh);
     } catch (err) {
       debugLog("sampling failed:", err);
       this.sample = null;
@@ -569,7 +592,7 @@ class DissolveEffect {
     this.savedAlpha = this.mesh?.alpha ?? 1;
     if (this.mesh) {
       const modeIndex = SWEEP_MODE_INDEX[this.cfg.sweep] ?? 0;
-      const wrap = createDissolveFilter(modeIndex, this.doc.w, this.doc.h);
+      const wrap = createDissolveFilter(modeIndex, this.box.w, this.box.h);
       if (wrap) {
         try {
           this.savedFilters = this.mesh.filters ?? null;
@@ -658,8 +681,8 @@ class DissolveEffect {
     const speed = WIND_BASE_PX_S * this.cfg.windStrength;
 
     p.alive = true;
-    p.x = this.doc.object.x + s.xs[i] + rand(-1.2, 1.2);
-    p.y = this.doc.object.y + s.ys[i] + rand(-1.2, 1.2);
+    p.x = this.box.x + s.xs[i] + rand(-1.2, 1.2);
+    p.y = this.box.y + s.ys[i] + rand(-1.2, 1.2);
 
     // Crumble phase: brief loose drift downward/outward, as if losing cohesion.
     p.vx0 = rand(-CRUMBLE_VX, CRUMBLE_VX);
@@ -781,7 +804,9 @@ class DissolveEffect {
           }
         });
       } else if (after === AFTER_EFFECTS.DELETE) {
-        void this.doc.delete();
+        Promise.resolve(this.doc.delete()).catch((err) => {
+          warnLog(`afterEffect "delete" failed:`, err);
+        });
       }
     } catch (err) {
       warnLog(`afterEffect "${after}" failed:`, err);

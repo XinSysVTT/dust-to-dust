@@ -25,6 +25,9 @@ export function getAdapter() {
   return game.system?.id === "crucible" ? crucibleAdapter : genericAdapter;
 }
 
+/** hpZero latch: token id -> last known dead-state. Triggers on false→true. */
+const hpDeadLatch = new Map();
+
 /** Register all hooks. Called once on "ready". */
 export function initTriggers() {
   Hooks.on("createActiveEffect", (effect, options, userId) => {
@@ -38,9 +41,12 @@ export function initTriggers() {
   });
   Hooks.on("renderTokenHUD", onRenderTokenHUD);
   Hooks.on("deleteToken", (doc) => {
+    hpDeadLatch.delete(String(doc?.id));
     void cancelEffect(doc?.id, "token-deleted");
   });
-  Hooks.on("destroyScene", () => cancelAllEffects("scene-destroyed"));
+  // Not "destroyScene" — that hook does not exist in v14; this is the
+  // Foundry hook fired when the scene canvas is torn down.
+  Hooks.on("canvasTearDown", () => cancelAllEffects("scene-torn-down"));
 }
 
 /** deadStatus mode: an ActiveEffect carrying the dead status was created. */
@@ -57,14 +63,23 @@ async function onDeathStatusEffect(effect) {
   }
 }
 
-/** hpZero mode: an actor's (or delta's) health data changed. */
+/**
+ * hpZero mode: an actor's (or delta's) health data changed.
+ *
+ * Uses a per-token transition latch so a token that stays dead across several
+ * unrelated updates does not re-animate, while revive (latch cleared on a
+ * non-death update) followed by another death does re-animate.
+ */
 async function onActorHealthUpdate(doc, change) {
   try {
     if (getSetting("triggerMode") !== TRIGGER_MODES.HP_ZERO) return;
     const adapter = getAdapter();
-    if (!adapter.isDeathActor?.({ doc, change })) return;
+    const nowDead = !!adapter.isDeathActor?.({ doc, change });
     for (const tdoc of tokenDocsFromActorLike(doc)) {
-      void triggerToken(tdoc);
+      if (!tdoc?.id) continue;
+      const wasDead = hpDeadLatch.get(String(tdoc.id)) ?? false;
+      hpDeadLatch.set(String(tdoc.id), nowDead); // update or clear on every health update
+      if (nowDead && !wasDead) void triggerToken(tdoc);
     }
   } catch (err) {
     warnLog("hp-zero trigger failed:", err);
@@ -131,7 +146,9 @@ function onRenderTokenHUD(hud, html, data) {
     if ($html.find(".dtd-dissolve").length) return;
     const label = game.i18n.localize("DUSTTODUST.HUD.Dissolve");
     const $btn = $(`<div class="control-icon dtd-dissolve" title="${label}" data-tooltip="${label}"><i class="fas fa-wind"></i></div>`);
-    let $host = $html.find(".col.right .effects").first();
+    let $host = $html.find("#token-hud .status-effects").first(); // v14 structure
+    if (!$host.length) $host = $html.find(".col.right .status-effects").first();
+    if (!$host.length) $host = $html.find(".col.right .effects").first();
     if (!$host.length) $host = $html.find(".col.right").first();
     if (!$host.length) $host = $html;
     $host.append($btn);

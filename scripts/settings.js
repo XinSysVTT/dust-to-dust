@@ -44,8 +44,12 @@ export const DEFAULTS = {
   debug: false,
 };
 
-/** i18n key builder for settings labels/hints/choices. */
-const KEY = (key, leaf) => `DUSTTODUST.SETTINGS.${key}.${leaf}`;
+/**
+ * i18n key builder for settings labels/hints/choices. Registry keys are
+ * camelCase but the lang file's section names are PascalCase ("TriggerMode"),
+ * matching the house lang style — convert here so generated keys resolve.
+ */
+const KEY = (key, leaf) => `DUSTTODUST.SETTINGS.${key.charAt(0).toUpperCase()}${key.slice(1)}.${leaf}`;
 
 const WORLD = "world";
 const CLIENT = "client";
@@ -140,6 +144,19 @@ export function registerSettings() {
     if (def.range) options.range = def.range;
     game.settings.register(MODULE_ID, def.key, options);
   }
+}
+
+/**
+ * Every i18n path registerSettings() will generate, in registration order.
+ * Exported as a seam so tests can assert all of them resolve in lang/en.json.
+ */
+export function settingI18nPaths() {
+  const paths = [];
+  for (const def of REGISTRY) {
+    paths.push(KEY(def.key, "Name"), KEY(def.key, "Hint"));
+    for (const value of def.choices ?? []) paths.push(KEY(def.key, `Choices.${value}`));
+  }
+  return paths;
 }
 
 /** Read a setting; falls back to the default if not (yet) registered. */

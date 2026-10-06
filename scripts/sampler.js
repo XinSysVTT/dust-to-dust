@@ -6,7 +6,9 @@
 //   x, y     — token-local position in world pixels,
 //   lum      — perceived brightness (drives particle size variance),
 // and each call turns that cloud into sweep-ordered typed arrays matching the
-// dissolve filter's fragment shader (same uv math, same vanish order).
+// dissolve filter's fragment shader (same uv math, same vanish order). Points
+// are relative to the token's displayed box (top-left origin), which respects
+// texture scaling.
 //
 // Robustness: pixel extraction is best-effort across Pixi versions. If the
 // texture cannot be read we fall back to a jittered elliptical disc of points
@@ -31,8 +33,8 @@ function pseudoRandom(i) {
   return x - Math.floor(x);
 }
 
-/** Stable cache key: texture identity + token size (invalidates on resize). */
-function cacheKeyFor(token, texture) {
+/** Stable cache key: texture identity + displayed box size (invalidates on resize). */
+function cacheKeyFor(boxW, boxH, texture) {
   try {
     const base = texture.baseTexture ?? texture.source;
     const id =
@@ -43,7 +45,7 @@ function cacheKeyFor(token, texture) {
       texture?.label ??
       null;
     if (!id) return null;
-    return `${id}|${Math.round(token.w)}x${Math.round(token.h)}`;
+    return `${id}|${Math.round(boxW)}x${Math.round(boxH)}`;
   } catch (err) {
     return null;
   }
@@ -117,11 +119,11 @@ function readPixels(srcCanvas, sw, sh) {
   return ctx.getImageData(0, 0, sw, sh);
 }
 
-/** Sample the texture pixels into a raw point cloud in token-local pixels. */
-function samplePixels(token, srcCanvas) {
-  const scale = Math.min(1, SAMPLE_MAX_DIM / Math.max(token.w, token.h));
-  const sw = Math.max(2, Math.round(token.w * scale));
-  const sh = Math.max(2, Math.round(token.h * scale));
+/** Sample the texture pixels into a raw point cloud in displayed-box pixels. */
+function samplePixels(boxW, boxH, srcCanvas) {
+  const scale = Math.min(1, SAMPLE_MAX_DIM / Math.max(boxW, boxH));
+  const sw = Math.max(2, Math.round(boxW * scale));
+  const sh = Math.max(2, Math.round(boxH * scale));
   const data = readPixels(srcCanvas, sw, sh).data;
 
   const xs = [];
@@ -132,8 +134,8 @@ function samplePixels(token, srcCanvas) {
       const i = (py * sw + px) * 4;
       const a = data[i + 3];
       if (a <= ALPHA_THRESHOLD) continue;
-      xs.push(((px + 0.5) / sw) * token.w);
-      ys.push(((py + 0.5) / sh) * token.h);
+      xs.push(((px + 0.5) / sw) * boxW);
+      ys.push(((py + 0.5) / sh) * boxH);
       const brightness = (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
       lum.push(brightness * (a / 255));
     }
@@ -158,17 +160,15 @@ function samplePixels(token, srcCanvas) {
 }
 
 /**
- * Fallback silhouette: jittered elliptical disc covering the token footprint.
+ * Fallback silhouette: jittered elliptical disc covering the displayed box.
  * Used when the texture cannot be read (or is fully transparent).
  */
-function discSample(token, targetCount) {
-  const w = token.w;
-  const h = token.h;
-  const cx = w / 2;
-  const cy = h / 2;
-  const rx = w * 0.48;
-  const ry = h * 0.48;
-  const step = Math.max(2, Math.sqrt((w * h) / Math.max(1, targetCount)) * 0.94);
+function discSample(boxW, boxH, targetCount) {
+  const cx = boxW / 2;
+  const cy = boxH / 2;
+  const rx = boxW * 0.48;
+  const ry = boxH * 0.48;
+  const step = Math.max(2, Math.sqrt((boxW * boxH) / Math.max(1, targetCount)) * 0.94);
   const xs = [];
   const ys = [];
   const lum = [];
@@ -187,22 +187,23 @@ function discSample(token, targetCount) {
 
 /**
  * Compute each point's vanish order for a sweep direction. This mirrors the
- * dissolve filter shader exactly (same uv mapping, same aspect handling) so
- * particles spawn exactly where the token just crumbled.
+ * dissolve filter shader exactly (same uv mapping, same aspect handling, same
+ * inward inversion) so particles spawn exactly where the token just crumbled.
  */
-function computeOrders(raw, token, sweepMode) {
+function computeOrders(raw, boxW, boxH, sweepMode) {
   const orders = new Float32Array(raw.count);
-  const aspect = token.w / Math.max(1, token.h);
+  const aspect = boxW / Math.max(1, boxH);
   for (let i = 0; i < raw.count; i++) {
-    const u = raw.xs[i] / token.w;
-    const v = raw.ys[i] / token.h;
+    const u = raw.xs[i] / boxW;
+    const v = raw.ys[i] / boxH;
     let order;
     if (sweepMode === "down") {
       order = v; // top edge goes first
     } else if (sweepMode === "inward") {
       const cx = (u - 0.5) * aspect;
       const cy = v - 0.5;
-      order = Math.min(1, Math.hypot(cx, cy) * 1.41421356); // rim goes first
+      // Edges-first: the rim (max radial distance) gets the smallest order.
+      order = 1 - Math.min(1, Math.hypot(cx, cy) * 1.41421356);
     } else {
       order = 1 - v; // "up": bottom edge goes first, front rises
     }
@@ -216,12 +217,12 @@ function computeOrders(raw, token, sweepMode) {
  * then return points sorted by vanish order so the emitter can stream them
  * with a moving pointer.
  */
-function finalize(raw, token, sweepMode, targetCount) {
+function finalize(raw, boxW, boxH, sweepMode, targetCount) {
   const total = raw.count;
   if (total === 0) {
     return { xs: new Float32Array(0), ys: new Float32Array(0), orders: new Float32Array(0), sizes: new Float32Array(0), count: 0 };
   }
-  const orders = computeOrders(raw, token, sweepMode);
+  const orders = computeOrders(raw, boxW, boxH, sweepMode);
 
   // Deterministic thinning to the particle target.
   let indices = [];
@@ -257,32 +258,42 @@ function finalize(raw, token, sweepMode, targetCount) {
 
 /**
  * Build the sweep-ordered sample for a token.
- * @param {TokenDocument} token  the token document (uses .w/.h and .mesh.texture)
+ * @param {TokenDocument} token  the token document (provides fallback w/h)
  * @param {string} sweepMode     "up" | "down" | "inward"
  * @param {number} targetCount   desired particle count before emission
+ * @param {PIXI.Sprite|null} [mesh]  the placeable's mesh (token.object.mesh);
+ *        its texture is sampled and its displayed width/height (which reflect
+ *        texture scale) define the sampling box, falling back to doc.w/doc.h
  * @returns {Promise<{xs: Float32Array, ys: Float32Array, orders: Float32Array, sizes: Float32Array, count: number}>}
  */
-export async function buildSample(token, sweepMode, targetCount) {
+export async function buildSample(token, sweepMode, targetCount, mesh = null) {
   const empty = { xs: new Float32Array(0), ys: new Float32Array(0), orders: new Float32Array(0), sizes: new Float32Array(0), count: 0 };
   try {
     if (!token || !Number.isFinite(token.w) || !Number.isFinite(token.h) || token.w <= 0 || token.h <= 0) return empty;
-    const texture = token.mesh?.texture ?? null;
-    const key = texture ? cacheKeyFor(token, texture) : null;
+    // The mesh lives on the placeable, not the document. Resolve it defensively.
+    const placeableMesh = mesh ?? token.object?.mesh ?? null;
+    const boxW = Math.max(1, Number(placeableMesh?.width) || token.w);
+    const boxH = Math.max(1, Number(placeableMesh?.height) || token.h);
+    const texture = placeableMesh?.texture ?? null;
+    const key = texture ? cacheKeyFor(boxW, boxH, texture) : null;
     let raw = cacheGet(key);
     if (!raw && texture) {
       const src = await textureToCanvas(texture);
       if (src) {
-        raw = samplePixels(token, src);
+        raw = samplePixels(boxW, boxH, src);
         if (raw.count === 0) debugLog("texture fully transparent; using disc fallback");
         else cachePut(key, raw);
       }
     }
-    if (!raw || raw.count === 0) raw = discSample(token, targetCount);
-    return finalize(raw, token, sweepMode, Math.max(8, Math.round(targetCount)));
+    if (!raw || raw.count === 0) raw = discSample(boxW, boxH, targetCount);
+    return finalize(raw, boxW, boxH, sweepMode, Math.max(8, Math.round(targetCount)));
   } catch (err) {
     debugLog("buildSample failed; using disc fallback:", err?.message ?? err);
     try {
-      return finalize(discSample(token, targetCount), token, sweepMode, Math.max(8, Math.round(targetCount)));
+      const placeableMesh = mesh ?? token.object?.mesh ?? null;
+      const boxW = Math.max(1, Number(placeableMesh?.width) || token.w);
+      const boxH = Math.max(1, Number(placeableMesh?.height) || token.h);
+      return finalize(discSample(boxW, boxH, targetCount), boxW, boxH, sweepMode, Math.max(8, Math.round(targetCount)));
     } catch (err2) {
       debugLog("disc fallback failed:", err2?.message ?? err2);
       return empty;

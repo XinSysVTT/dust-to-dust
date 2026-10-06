@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | Module version | 0.1.0 |
-| Foundry VTT | v14 (minimum 14, verified 14.368) |
+| Foundry VTT | v14 (minimum 14.366, verified 14.368) |
 | First-class system | [Crucible](https://github.com/XinSysVTT/crucible) 0.10+ |
 | Other systems | Generic adapter (core `dead` status / common HP paths) |
 | License | MIT |
@@ -110,6 +110,7 @@ await game.modules.get("dust-to-dust").api.play(token, {
 Plain browser ESM, no bundler, no dependencies.
 
 ```bash
+npm test          # node --test suite (adapters, i18n parity, API safety)
 npm run check     # node --check over every script (ESM via package.json)
 npm run deploy    # junction this repo into the local Foundry Data/modules
 ```
