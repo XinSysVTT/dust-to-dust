@@ -1,0 +1,48 @@
+{
+  "id": "dust-to-dust",
+  "title": "Dust to Dust",
+  "description": "A Frieren-style death animation for tokens: on death, the body crumbles edge-to-edge into matte black dust that lingers a beat, then the wind scatters it away. First-class support for the Crucible system; other systems work through a generic adapter.",
+  "version": "0.1.0",
+  "compatibility": {
+    "minimum": "14",
+    "verified": "14.368",
+    "maximum": "14"
+  },
+  "authors": [
+    {
+      "name": "Dust to Dust Project"
+    }
+  ],
+  "esmodules": [
+    "scripts/main.js"
+  ],
+  "styles": [
+    "styles/dust-to-dust.css"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "relationships": {
+    "systems": [
+      {
+        "id": "crucible",
+        "type": "system",
+        "compatibility": {
+          "minimum": "0.10.0",
+          "verified": "0.10.0"
+        }
+      }
+    ]
+  },
+  "socket": false,
+  "url": "https://github.com/XinSysVTT/dust-to-dust",
+  "manifest": "https://github.com/XinSysVTT/dust-to-dust/releases/latest/download/module.json",
+  "download": "https://github.com/XinSysVTT/dust-to-dust/releases/download/0.1.0/module.zip",
+  "readme": "README.md",
+  "license": "LICENSE",
+  "flags": {}
+}

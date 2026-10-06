@@ -1,0 +1,15 @@
+# Local reference copies (kept outside the repo by convention)
+/FoundryVTT-Node-14.368/
+/crucible-master/
+
+# Archives
+*.zip
+
+# Tooling
+.zcode/
+node_modules/
+
+# OS noise
+Thumbs.db
+Desktop.ini
+.DS_Store

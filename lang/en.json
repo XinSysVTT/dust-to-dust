@@ -1,0 +1,69 @@
+{
+  "DUSTTODUST": {
+    "SETTINGS": {
+      "TriggerMode": {
+        "Name": "Death Trigger",
+        "Hint": "How a death animation is fired. \"Dead status on token\" watches for the dead/defeated status (recommended for Crucible: the system applies its \"dead\" status both when heroes reach full wounds and when adversaries reach 0 health). \"Actor HP reaches zero\" watches actor health. \"Manual\" only fires from the Token HUD button or the macro API.",
+        "Choices": {
+          "deadStatus": "Dead status on token",
+          "hpZero": "Actor HP reaches zero",
+          "manual": "Manual only (HUD / API)"
+        }
+      },
+      "SweepDirection": {
+        "Name": "Sweep Direction",
+        "Hint": "Where the crumbling starts and how it travels across the token.",
+        "Choices": {
+          "up": "Up (rises away)",
+          "down": "Down (sinks away)",
+          "inward": "Inward (edges first)"
+        }
+      },
+      "DissolveDuration": {
+        "Name": "Dissolve Duration",
+        "Hint": "Seconds the crumbling sweep takes to cross the whole token."
+      },
+      "ParticleDensity": {
+        "Name": "Particle Density",
+        "Hint": "Multiplier for how much dust is released (0.2 to 3). The count also scales with token size."
+      },
+      "WindDirection": {
+        "Name": "Wind Direction",
+        "Hint": "Direction the wind blows toward, in degrees. 0 blows to the right, 90 downward."
+      },
+      "WindStrength": {
+        "Name": "Wind Strength",
+        "Hint": "Multiplier for how fast the wind carries the dust away."
+      },
+      "Turbulence": {
+        "Name": "Turbulence",
+        "Hint": "How much the dust wobbles and swirls while the wind carries it."
+      },
+      "ParticleColor": {
+        "Name": "Particle Color",
+        "Hint": "Hex color of the dust, e.g. #0a0a0a (default: near-black)."
+      },
+      "AfterEffect": {
+        "Name": "After The Effect",
+        "Hint": "What happens to the token once the dust settles. \"Hide\" marks the token hidden. \"Show\" leaves the corpse visible. \"Delete\" removes the token document — destructive, GM only.",
+        "Choices": {
+          "hide": "Hide the token",
+          "show": "Keep the corpse visible",
+          "delete": "Delete the token"
+        }
+      },
+      "Debug": {
+        "Name": "Debug Logging",
+        "Hint": "Print engine diagnostics to the browser console."
+      }
+    },
+    "HUD": {
+      "Dissolve": "Dissolve to dust"
+    },
+    "NOTIFICATIONS": {
+      "NoCanvas": "Dust to Dust: no active scene, the effect was skipped.",
+      "InvalidTarget": "Dust to Dust: could not resolve a token from the given target.",
+      "AlreadyPlaying": "Dust to Dust: that token is already dissolving."
+    }
+  }
+}

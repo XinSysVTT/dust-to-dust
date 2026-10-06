@@ -1,0 +1,291 @@
+// Dust to Dust — texture sampling.
+//
+// When a dissolve starts we read the token's displayed texture once into an
+// offscreen 2D canvas, then build the dissolve point cloud: every sufficiently
+// opaque pixel becomes a dust candidate carrying
+//   x, y     — token-local position in world pixels,
+//   lum      — perceived brightness (drives particle size variance),
+// and each call turns that cloud into sweep-ordered typed arrays matching the
+// dissolve filter's fragment shader (same uv math, same vanish order).
+//
+// Robustness: pixel extraction is best-effort across Pixi versions. If the
+// texture cannot be read we fall back to a jittered elliptical disc of points
+// covering the token footprint, so the effect always plays.
+
+import { debugLog } from "./settings.js";
+
+/** Max sample grid cells on the token's long side (density cap + perf). */
+const SAMPLE_MAX_DIM = 48;
+/** Alpha (0-255) above which a pixel counts as solid. */
+const ALPHA_THRESHOLD = 32;
+/** Hard cap on raw sampled points before thinning (huge tokens). */
+const RAW_LIMIT = 6000;
+/** Cache of raw samples (LRU). */
+const CACHE_LIMIT = 24;
+
+const cache = new Map(); // cacheKey -> { xs, ys, lum, count }
+
+/** Deterministic per-index pseudo-random in [0, 1) — stable thinning. */
+function pseudoRandom(i) {
+  const x = Math.sin(i * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/** Stable cache key: texture identity + token size (invalidates on resize). */
+function cacheKeyFor(token, texture) {
+  try {
+    const base = texture.baseTexture ?? texture.source;
+    const id =
+      base?.resource?.url ??
+      base?.label ??
+      texture?.textureCacheIds?.[0] ??
+      base?.uuid ??
+      texture?.label ??
+      null;
+    if (!id) return null;
+    return `${id}|${Math.round(token.w)}x${Math.round(token.h)}`;
+  } catch (err) {
+    return null;
+  }
+}
+
+function cacheGet(key) {
+  if (!key || !cache.has(key)) return null;
+  const value = cache.get(key);
+  cache.delete(key);
+  cache.set(key, value); // refresh LRU position
+  return value;
+}
+
+function cachePut(key, value) {
+  if (!key) return;
+  cache.set(key, value);
+  if (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    cache.delete(oldest);
+  }
+}
+
+/**
+ * Get the texture's pixels as a 2D canvas.
+ * Strategy 1: renderer extract (sync in Pixi 7; some versions return a promise).
+ * Strategy 2: draw the base texture resource directly, honoring the frame.
+ * Returns null when neither works.
+ */
+async function textureToCanvas(texture) {
+  // Strategy 1: renderer extract.
+  try {
+    const renderer = canvas?.app?.renderer ?? canvas?.renderer;
+    if (renderer?.extract && texture) {
+      let out = renderer.extract.canvas(texture);
+      if (out && typeof out.then === "function") out = await out;
+      if (out && out.width > 0 && out.height > 0) return out;
+    }
+  } catch (err) {
+    debugLog("extract.canvas unavailable:", err?.message ?? err);
+  }
+  // Strategy 2: draw the underlying resource.
+  try {
+    const base = texture.baseTexture ?? texture.source;
+    const resource = base?.resource;
+    const src = resource?.data ?? resource?.canvas ?? resource?.source ?? null;
+    if (src) {
+      const frame = texture.frame ?? texture.textureFrame;
+      const w = Math.max(1, Math.round(frame?.width ?? base?.width ?? 1));
+      const h = Math.max(1, Math.round(frame?.height ?? base?.height ?? 1));
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(src, Math.max(0, frame?.x ?? 0), Math.max(0, frame?.y ?? 0), w, h, 0, 0, w, h);
+      return c;
+    }
+  } catch (err) {
+    debugLog("resource draw unavailable:", err?.message ?? err);
+  }
+  return null;
+}
+
+/** Downsample a source canvas and return its ImageData. */
+function readPixels(srcCanvas, sw, sh) {
+  const c = document.createElement("canvas");
+  c.width = sw;
+  c.height = sh;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(srcCanvas, 0, 0, sw, sh);
+  return ctx.getImageData(0, 0, sw, sh);
+}
+
+/** Sample the texture pixels into a raw point cloud in token-local pixels. */
+function samplePixels(token, srcCanvas) {
+  const scale = Math.min(1, SAMPLE_MAX_DIM / Math.max(token.w, token.h));
+  const sw = Math.max(2, Math.round(token.w * scale));
+  const sh = Math.max(2, Math.round(token.h * scale));
+  const data = readPixels(srcCanvas, sw, sh).data;
+
+  const xs = [];
+  const ys = [];
+  const lum = [];
+  for (let py = 0; py < sh; py++) {
+    for (let px = 0; px < sw; px++) {
+      const i = (py * sw + px) * 4;
+      const a = data[i + 3];
+      if (a <= ALPHA_THRESHOLD) continue;
+      xs.push(((px + 0.5) / sw) * token.w);
+      ys.push(((py + 0.5) / sh) * token.h);
+      const brightness = (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
+      lum.push(brightness * (a / 255));
+    }
+  }
+
+  // Thin absurdly dense samples (giant tokens) before any further work.
+  if (xs.length > RAW_LIMIT) {
+    const keep = RAW_LIMIT / xs.length;
+    const fx = [];
+    const fy = [];
+    const fl = [];
+    for (let i = 0; i < xs.length; i++) {
+      if (pseudoRandom(i) < keep) {
+        fx.push(xs[i]);
+        fy.push(ys[i]);
+        fl.push(lum[i]);
+      }
+    }
+    return { xs: Float32Array.from(fx), ys: Float32Array.from(fy), lum: Float32Array.from(fl), count: fx.length };
+  }
+  return { xs: Float32Array.from(xs), ys: Float32Array.from(ys), lum: Float32Array.from(lum), count: xs.length };
+}
+
+/**
+ * Fallback silhouette: jittered elliptical disc covering the token footprint.
+ * Used when the texture cannot be read (or is fully transparent).
+ */
+function discSample(token, targetCount) {
+  const w = token.w;
+  const h = token.h;
+  const cx = w / 2;
+  const cy = h / 2;
+  const rx = w * 0.48;
+  const ry = h * 0.48;
+  const step = Math.max(2, Math.sqrt((w * h) / Math.max(1, targetCount)) * 0.94);
+  const xs = [];
+  const ys = [];
+  const lum = [];
+  for (let y = cy - ry; y <= cy + ry; y += step) {
+    for (let x = cx - rx; x <= cx + rx; x += step) {
+      const nx = (x - cx) / rx;
+      const ny = (y - cy) / ry;
+      if (nx * nx + ny * ny > 1) continue;
+      xs.push(x + (pseudoRandom(xs.length) - 0.5) * step * 0.8);
+      ys.push(y + (pseudoRandom(ys.length + 31) - 0.5) * step * 0.8);
+      lum.push(0.5);
+    }
+  }
+  return { xs: Float32Array.from(xs), ys: Float32Array.from(ys), lum: Float32Array.from(lum), count: xs.length };
+}
+
+/**
+ * Compute each point's vanish order for a sweep direction. This mirrors the
+ * dissolve filter shader exactly (same uv mapping, same aspect handling) so
+ * particles spawn exactly where the token just crumbled.
+ */
+function computeOrders(raw, token, sweepMode) {
+  const orders = new Float32Array(raw.count);
+  const aspect = token.w / Math.max(1, token.h);
+  for (let i = 0; i < raw.count; i++) {
+    const u = raw.xs[i] / token.w;
+    const v = raw.ys[i] / token.h;
+    let order;
+    if (sweepMode === "down") {
+      order = v; // top edge goes first
+    } else if (sweepMode === "inward") {
+      const cx = (u - 0.5) * aspect;
+      const cy = v - 0.5;
+      order = Math.min(1, Math.hypot(cx, cy) * 1.41421356); // rim goes first
+    } else {
+      order = 1 - v; // "up": bottom edge goes first, front rises
+    }
+    orders[i] = Math.min(1, Math.max(0, order));
+  }
+  return orders;
+}
+
+/**
+ * Thin the raw cloud to the target count (deterministic, spatially unbiased),
+ * then return points sorted by vanish order so the emitter can stream them
+ * with a moving pointer.
+ */
+function finalize(raw, token, sweepMode, targetCount) {
+  const total = raw.count;
+  if (total === 0) {
+    return { xs: new Float32Array(0), ys: new Float32Array(0), orders: new Float32Array(0), sizes: new Float32Array(0), count: 0 };
+  }
+  const orders = computeOrders(raw, token, sweepMode);
+
+  // Deterministic thinning to the particle target.
+  let indices = [];
+  if (total > targetCount) {
+    const keep = targetCount / total;
+    for (let i = 0; i < total; i++) {
+      if (pseudoRandom(i * 7 + 13) < keep) indices.push(i);
+    }
+    // Guarantee we did not overshoot or undershoot absurdly.
+    if (indices.length > targetCount * 1.3) indices = indices.slice(0, targetCount);
+    if (indices.length < 8) indices = Array.from({ length: Math.min(total, targetCount) }, (_, i) => i);
+  } else {
+    indices = Array.from({ length: total }, (_, i) => i);
+  }
+
+  // Sort remaining points by vanish order (ascending = emitted first).
+  indices.sort((a, b) => orders[a] - orders[b]);
+
+  const count = indices.length;
+  const xs = new Float32Array(count);
+  const ys = new Float32Array(count);
+  const sortedOrders = new Float32Array(count);
+  const sizes = new Float32Array(count);
+  for (let k = 0; k < count; k++) {
+    const i = indices[k];
+    xs[k] = raw.xs[i];
+    ys[k] = raw.ys[i];
+    sortedOrders[k] = orders[i];
+    sizes[k] = Math.min(1.4, Math.max(0.6, 0.7 + 0.6 * raw.lum[i]));
+  }
+  return { xs, ys, orders: sortedOrders, sizes, count };
+}
+
+/**
+ * Build the sweep-ordered sample for a token.
+ * @param {TokenDocument} token  the token document (uses .w/.h and .mesh.texture)
+ * @param {string} sweepMode     "up" | "down" | "inward"
+ * @param {number} targetCount   desired particle count before emission
+ * @returns {Promise<{xs: Float32Array, ys: Float32Array, orders: Float32Array, sizes: Float32Array, count: number}>}
+ */
+export async function buildSample(token, sweepMode, targetCount) {
+  const empty = { xs: new Float32Array(0), ys: new Float32Array(0), orders: new Float32Array(0), sizes: new Float32Array(0), count: 0 };
+  try {
+    if (!token || !Number.isFinite(token.w) || !Number.isFinite(token.h) || token.w <= 0 || token.h <= 0) return empty;
+    const texture = token.mesh?.texture ?? null;
+    const key = texture ? cacheKeyFor(token, texture) : null;
+    let raw = cacheGet(key);
+    if (!raw && texture) {
+      const src = await textureToCanvas(texture);
+      if (src) {
+        raw = samplePixels(token, src);
+        if (raw.count === 0) debugLog("texture fully transparent; using disc fallback");
+        else cachePut(key, raw);
+      }
+    }
+    if (!raw || raw.count === 0) raw = discSample(token, targetCount);
+    return finalize(raw, token, sweepMode, Math.max(8, Math.round(targetCount)));
+  } catch (err) {
+    debugLog("buildSample failed; using disc fallback:", err?.message ?? err);
+    try {
+      return finalize(discSample(token, targetCount), token, sweepMode, Math.max(8, Math.round(targetCount)));
+    } catch (err2) {
+      debugLog("disc fallback failed:", err2?.message ?? err2);
+      return empty;
+    }
+  }
+}

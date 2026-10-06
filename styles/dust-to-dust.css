@@ -1,0 +1,20 @@
+/* Dust to Dust — TokenHUD button styling.
+   The button reuses the core .control-icon look; only an ash-gray accent,
+   hover state and active state are added. */
+
+#token-hud .control-icon.dtd-dissolve,
+.token-hud .control-icon.dtd-dissolve {
+  color: #b9b3ab;
+}
+
+#token-hud .control-icon.dtd-dissolve:hover,
+.token-hud .control-icon.dtd-dissolve:hover {
+  color: #efeae2;
+  border-color: #efeae2;
+  box-shadow: 0 0 4px rgba(20, 20, 20, 0.9);
+}
+
+#token-hud .control-icon.dtd-dissolve i,
+.token-hud .control-icon.dtd-dissolve i {
+  font-size: var(--font-size-18, 18px);
+}
