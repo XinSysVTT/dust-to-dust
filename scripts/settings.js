@@ -34,7 +34,7 @@ export const AFTER_EFFECTS = {
 export const DEFAULTS = {
   triggerMode: TRIGGER_MODES.DEAD_STATUS,
   sweepDirection: SWEEP_DIRECTIONS.UP,
-  dissolveDuration: 2.2,
+  dissolveDuration: 3.2,
   particleDensity: 1.0,
   windDirection: 0,
   windStrength: 1.0,

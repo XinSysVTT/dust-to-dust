@@ -524,6 +524,7 @@ class DissolveEffect {
     this.meshHidden = false;
     this.fadeFallback = false;
     this.mesh = null;
+    this.token = null;
     this.box = null;
     this.sample = null;
     this.host = null;
@@ -543,6 +544,7 @@ class DissolveEffect {
   _begin() {
     try {
       const token = this.doc?.object; // the placeable
+      this.token = token ?? null;
       this.mesh = token?.mesh ?? null;
       if (!token || token.destroyed || !this.doc?.parent) {
         this.finish(false, "token-not-on-canvas");
@@ -649,8 +651,10 @@ class DissolveEffect {
 
       if (this.host.update) this.host.update();
 
-      if (sweepT >= 1 && !this.meshHidden && this.mesh) {
-        this.mesh.visible = false;
+      if (sweepT >= 1 && !this.meshHidden && this.token) {
+        // Hide the whole placeable — mesh, status icons, bars, everything.
+        this.token.visible = false;
+        if (this.mesh) this.mesh.visible = false;
         this.meshHidden = true;
       }
       if (sweepT >= 1 && this.emitPtr >= this.sample.count && this.aliveCount === 0) {
@@ -758,16 +762,23 @@ class DissolveEffect {
           this.filterWrap = null;
         }
         if (this.fadeFallback) this.mesh.alpha = this.savedAlpha;
-        // When the effect ends by hiding or deleting the token, keep the mesh
-        // invisible until the document update lands. Restoring visibility here
-        // would flash the full token for a frame or two (any refreshToken in
-        // the window re-shows it) before the hidden state applies.
-        const willVanish = success && game.user?.isGM
+        // When the effect ends by hiding or deleting the token, keep it
+        // invisible on THIS client until the document update lands — restoring
+        // visibility here flashes the full token for a frame or two (any
+        // refreshToken in the window re-shows it). This applies to every user
+        // who can trigger the mutation, not just GMs; users who cannot mutate
+        // get their view restored immediately.
+        const wantsVanish = success
           && (this.cfg.afterEffect === AFTER_EFFECTS.HIDE || this.cfg.afterEffect === AFTER_EFFECTS.DELETE);
-        if (willVanish) {
-          pendingVanish.add(String(this.doc.id));
+        const canMutate = wantsVanish && canUpdateDocument(this.doc);
+        if (wantsVanish && canMutate) {
+          const id = String(this.doc.id);
+          pendingVanish.add(id);
+          vanished.add(id);
+          if (this.token && !this.token.destroyed) this.token.visible = false;
           this.mesh.visible = false;
         } else {
+          if (this.token && !this.token.destroyed) this.token.visible = true;
           this.mesh.visible = true;
         }
       }
@@ -792,52 +803,84 @@ class DissolveEffect {
     this.resolve = null;
   }
 
-  /** Apply the end-of-effect token mutation. GM only; never on early cancel. */
+  /** Apply the end-of-effect token mutation. Only for users who can mutate the document; never on early cancel. */
   _applyAfterEffect() {
     const after = this.cfg.afterEffect;
+    const id = String(this.doc?.id ?? "");
     if (after === AFTER_EFFECTS.SHOW) return;
-    if (!game.user?.isGM) {
+    if (!canUpdateDocument(this.doc)) {
       // This client cannot mutate the document, so nothing will land; drop the
-      // vanish guard and put the token back.
-      pendingVanish.delete(String(this.doc.id));
-      try { if (this.mesh && !this.mesh.destroyed) this.mesh.visible = true; } catch (err) { /* gone */ }
+      // vanish guards and put the token back.
+      pendingVanish.delete(id);
+      vanished.delete(id);
+      try {
+        if (this.token && !this.token.destroyed) this.token.visible = true;
+        if (this.mesh && !this.mesh.destroyed) this.mesh.visible = true;
+      } catch (err) { /* gone */ }
       return;
     }
     try {
       if (this.doc.hidden) {
-        pendingVanish.delete(String(this.doc.id));
+        pendingVanish.delete(id);
         return;
       }
       if (after === AFTER_EFFECTS.HIDE) {
-        // The refreshToken guard keeps the mesh hidden until this lands; if the
-        // update fails, undo the local invisibility.
+        // The refreshToken guard keeps the whole token hidden until this lands.
         Promise.resolve(this.doc.update({ hidden: true }))
           .catch(() => {
+            pendingVanish.delete(id);
+            vanished.delete(id);
             try {
+              if (this.token && !this.token.destroyed) this.token.visible = true;
               if (this.mesh && !this.mesh.destroyed) this.mesh.visible = true;
             } catch (err) {
               /* token already gone */
             }
-          })
-          .finally(() => pendingVanish.delete(String(this.doc.id)));
+          });
+        // On success the token stays in `vanished` so the guard keeps it fully
+        // invisible (icon ghosts included) while it remains hidden.
       } else if (after === AFTER_EFFECTS.DELETE) {
         Promise.resolve(this.doc.delete())
-          .finally(() => pendingVanish.delete(String(this.doc.id)))
+          .then(() => { pendingVanish.delete(id); vanished.delete(id); })
           .catch((err) => {
+            pendingVanish.delete(id);
+            vanished.delete(id);
             warnLog(`afterEffect "delete" failed:`, err);
           });
       }
     } catch (err) {
       warnLog(`afterEffect "${after}" failed:`, err);
-      pendingVanish.delete(String(this.doc.id));
+      pendingVanish.delete(id);
+      vanished.delete(id);
     }
   }
 }
 
 /**
+ * True when the current user is allowed to update this token document — the
+ * gate for hide/delete after-effects (GMs always pass; owners do too).
+ */
+function canUpdateDocument(doc) {
+  try {
+    if (game.user?.isGM) return true;
+    return doc?.testUserPermission?.(game.user, "OWNER") === true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
  * Token ids whose dissolve finished and whose "hidden" document update is still
- * in flight. While a token is here, refreshToken forces its mesh invisible so
+ * in flight. While a token is here, refreshToken forces it fully invisible so
  * nothing (core refreshes, Ember, other modules) can flash the full token back
  * before the hidden state applies.
  */
 export const pendingVanish = new Set();
+
+/**
+ * Token ids that have been dissolved and hidden. While the token document
+ * stays hidden, refreshToken keeps it fully invisible for everyone (including
+ * the GM's ghost view and status icons). If someone unhides the token again,
+ * the guard releases it.
+ */
+export const vanished = new Set();
