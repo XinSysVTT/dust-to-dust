@@ -843,12 +843,21 @@ class DissolveEffect {
       try { Hooks.off(name, fn); } catch (err) { /* already off */ }
     }
     this._vanishWaitHooks = null;
-    if (!landed) {
-      debugLog(`vanish broadcast never landed for token ${this.doc?.id ?? "?"}; restoring view`);
+    const token = this.token ?? this.doc?.object;
+    if (landed) {
+      // The hidden/deleted state is authoritative and Foundry's own refresh has
+      // already applied the correct visibility. Only hand renderability back —
+      // re-showing the mesh here is what flashed the full token on screen.
+      try {
+        if (token && !token.destroyed) token.renderable = true;
+      } catch (err) {
+        debugLog("renderable restore skipped:", err?.message ?? err);
+      }
+    } else {
+      // Nothing landed (update failed / no GM available): the token must come
+      // back, so restore everything.
+      restorePlaceable(token);
     }
-    // Document state is authoritative now: players see nothing, the GM sees
-    // the ghosted corpse. Rendering returns to Foundry's control.
-    restorePlaceable(this.token ?? this.doc?.object);
   }
 
   /** Apply the end-of-effect token mutation. Only for users who can mutate the document; never on early cancel. */
