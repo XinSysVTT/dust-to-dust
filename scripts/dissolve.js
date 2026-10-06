@@ -653,6 +653,11 @@ class DissolveEffect {
 
       if (sweepT >= 1 && !this.meshHidden && this.token) {
         // Hide the whole placeable — mesh, status icons, bars, everything.
+        // renderable=false is the load-bearing part: Foundry recomputes
+        // `visible` on every refresh (and re-shows hidden tokens to the GM),
+        // but it never touches `renderable`, so the token stays unrendered
+        // until we explicitly restore it.
+        this.token.renderable = false;
         this.token.visible = false;
         if (this.mesh) this.mesh.visible = false;
         this.meshHidden = true;
@@ -773,13 +778,11 @@ class DissolveEffect {
         const canMutate = wantsVanish && canUpdateDocument(this.doc);
         if (wantsVanish && canMutate) {
           const id = String(this.doc.id);
-          pendingVanish.add(id);
           vanished.add(id);
-          if (this.token && !this.token.destroyed) this.token.visible = false;
-          this.mesh.visible = false;
+          saveVanishedStore();
+          applyVanishToPlaceable(this.token ?? this.doc?.object);
         } else {
-          if (this.token && !this.token.destroyed) this.token.visible = true;
-          this.mesh.visible = true;
+          restorePlaceable(this.token ?? this.doc?.object);
         }
       }
     } catch (err) {
@@ -809,49 +812,39 @@ class DissolveEffect {
     const id = String(this.doc?.id ?? "");
     if (after === AFTER_EFFECTS.SHOW) return;
     if (!canUpdateDocument(this.doc)) {
-      // This client cannot mutate the document, so nothing will land; drop the
-      // vanish guards and put the token back.
-      pendingVanish.delete(id);
+      // This client cannot mutate the document, so no hidden state will ever
+      // land here; drop the vanish guard and put the token back.
       vanished.delete(id);
-      try {
-        if (this.token && !this.token.destroyed) this.token.visible = true;
-        if (this.mesh && !this.mesh.destroyed) this.mesh.visible = true;
-      } catch (err) { /* gone */ }
+      saveVanishedStore();
+      restorePlaceable(this.doc?.object);
       return;
     }
     try {
-      if (this.doc.hidden) {
-        pendingVanish.delete(id);
-        return;
-      }
+      if (this.doc.hidden) return; // already hidden; renderable stays off
       if (after === AFTER_EFFECTS.HIDE) {
-        // The refreshToken guard keeps the whole token hidden until this lands.
-        Promise.resolve(this.doc.update({ hidden: true }))
-          .catch(() => {
-            pendingVanish.delete(id);
-            vanished.delete(id);
-            try {
-              if (this.token && !this.token.destroyed) this.token.visible = true;
-              if (this.mesh && !this.mesh.destroyed) this.mesh.visible = true;
-            } catch (err) {
-              /* token already gone */
-            }
-          });
-        // On success the token stays in `vanished` so the guard keeps it fully
-        // invisible (icon ghosts included) while it remains hidden.
+        // renderable=false is already applied, so nothing can flash while the
+        // update is in flight. If it fails, put the token back.
+        Promise.resolve(this.doc.update({ hidden: true })).catch(() => {
+          warnLog(`afterEffect "hide" failed; restoring token ${id}`);
+          vanished.delete(id);
+          saveVanishedStore();
+          restorePlaceable(this.doc?.object);
+        });
       } else if (after === AFTER_EFFECTS.DELETE) {
         Promise.resolve(this.doc.delete())
-          .then(() => { pendingVanish.delete(id); vanished.delete(id); })
+          .then(() => { vanished.delete(id); saveVanishedStore(); })
           .catch((err) => {
-            pendingVanish.delete(id);
             vanished.delete(id);
+            saveVanishedStore();
+            restorePlaceable(this.doc?.object);
             warnLog(`afterEffect "delete" failed:`, err);
           });
       }
     } catch (err) {
       warnLog(`afterEffect "${after}" failed:`, err);
-      pendingVanish.delete(id);
       vanished.delete(id);
+      saveVanishedStore();
+      restorePlaceable(this.doc?.object);
     }
   }
 }
@@ -869,18 +862,73 @@ function canUpdateDocument(doc) {
   }
 }
 
-/**
- * Token ids whose dissolve finished and whose "hidden" document update is still
- * in flight. While a token is here, refreshToken forces it fully invisible so
- * nothing (core refreshes, Ember, other modules) can flash the full token back
- * before the hidden state applies.
- */
-export const pendingVanish = new Set();
+/** Force a token placeable fully unrendered (mesh, icons, bars, everything). */
+function applyVanishToPlaceable(token) {
+  try {
+    if (!token || token.destroyed) return;
+    token.renderable = false;
+    token.visible = false;
+    if (token.mesh) token.mesh.visible = false;
+  } catch (err) {
+    debugLog("applyVanishToPlaceable failed:", err?.message ?? err);
+  }
+}
+
+/** Return a vanished token placeable to normal rendering. */
+function restorePlaceable(token) {
+  try {
+    if (!token || token.destroyed) return;
+    token.renderable = true;
+    token.visible = true;
+    if (token.mesh) token.mesh.visible = true;
+  } catch (err) {
+    debugLog("restorePlaceable failed:", err?.message ?? err);
+  }
+}
 
 /**
  * Token ids that have been dissolved and hidden. While the token document
- * stays hidden, refreshToken keeps it fully invisible for everyone (including
- * the GM's ghost view and status icons). If someone unhides the token again,
- * the guard releases it.
+ * stays hidden, the vanish rendering is re-applied on canvas load so nothing
+ * (GM ghost view, status icons, Ember, other modules) brings it back. If
+ * someone unhides the token, the guard releases it.
  */
 export const vanished = new Set();
+
+const VANISHED_STORE_KEY = (worldId) => `dust-to-dust.vanished.${worldId ?? "unknown"}`;
+
+/** Load persisted vanished token ids for this world and re-apply their hiding. */
+export function applyVanishedStore() {
+  try {
+    const raw = localStorage.getItem(VANISHED_STORE_KEY(game.world?.id));
+    if (!raw) return;
+    for (const id of JSON.parse(raw)) vanished.add(String(id));
+    for (const id of vanished) {
+      const tok = canvas?.tokens?.get(id);
+      if (tok && tok.document.hidden) applyVanishToPlaceable(tok);
+      else if (tok && !tok.document.hidden) {
+        vanished.delete(id); // user re-showed it in a previous session
+        saveVanishedStore();
+      }
+    }
+  } catch (err) {
+    debugLog("applyVanishedStore failed:", err?.message ?? err);
+  }
+}
+
+/** Persist the vanished token id set for this world. */
+function saveVanishedStore() {
+  try {
+    localStorage.setItem(VANISHED_STORE_KEY(game.world?.id), JSON.stringify([...vanished]));
+  } catch (err) {
+    debugLog("saveVanishedStore failed:", err?.message ?? err);
+  }
+}
+
+/** Remove a token id from the vanished set (token deleted or re-shown). */
+export function releaseVanished(id) {
+  const key = String(id ?? "");
+  if (!vanished.has(key)) return false;
+  vanished.delete(key);
+  saveVanishedStore();
+  return true;
+}

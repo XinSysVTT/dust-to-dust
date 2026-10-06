@@ -16,7 +16,7 @@
 // The manual path is the Token HUD button plus the macro API (api.js).
 
 import { getSetting, TRIGGER_MODES, debugLog, warnLog } from "./settings.js";
-import { playEffect, isPlaying, cancelEffect, cancelAllEffects, pendingVanish, vanished } from "./dissolve.js";
+import { playEffect, isPlaying, cancelEffect, cancelAllEffects, vanished, releaseVanished } from "./dissolve.js";
 import crucibleAdapter from "./systems/crucible.js";
 import genericAdapter from "./systems/generic.js";
 
@@ -42,30 +42,25 @@ export function initTriggers() {
   Hooks.on("renderTokenHUD", onRenderTokenHUD);
   Hooks.on("deleteToken", (doc) => {
     hpDeadLatch.delete(String(doc?.id));
+    releaseVanished(doc?.id);
     void cancelEffect(doc?.id, "token-deleted");
+  });
+  // If a dissolved-and-hidden token is re-shown (unhidden by the GM), release
+  // the vanish rendering so it becomes visible again.
+  Hooks.on("updateToken", (doc) => {
+    if (doc?.hidden === false) {
+      const tok = doc.object;
+      if (tok && !tok.renderable) {
+        tok.renderable = true;
+        tok.visible = true;
+        if (tok.mesh) tok.mesh.visible = true;
+      }
+      releaseVanished(doc?.id);
+    }
   });
   // Not "destroyScene" — that hook does not exist in v14; this is the
   // Foundry hook fired when the scene canvas is torn down.
   Hooks.on("canvasTearDown", () => cancelAllEffects("scene-torn-down"));
-  // While a dissolve's hide/delete update is in flight — and for as long as a
-  // vanished token stays hidden — every refresh re-forces the whole placeable
-  // invisible (mesh, status icons, bars). Otherwise anything that refreshes the
-  // token (core, Ember, other modules) flashes the full token back. If someone
-  // unhides the token again, the guard releases it.
-  Hooks.on("refreshToken", (token) => {
-    const id = String(token?.id ?? "");
-    if (pendingVanish.has(id)) {
-      token.visible = false;
-      if (token.mesh && !token.mesh.destroyed) token.mesh.visible = false;
-    } else if (vanished.has(id)) {
-      if (token.document?.hidden === true) {
-        token.visible = false;
-        if (token.mesh && !token.mesh.destroyed) token.mesh.visible = false;
-      } else {
-        vanished.delete(id);
-      }
-    }
-  });
 }
 
 /** deadStatus mode: an ActiveEffect carrying the dead status was created. */

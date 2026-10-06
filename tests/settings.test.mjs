@@ -50,6 +50,6 @@ test("defaults match the documented behavior", () => {
   assert.equal(DEFAULTS.triggerMode, TRIGGER_MODES.DEAD_STATUS);
   assert.equal(DEFAULTS.sweepDirection, SWEEP_DIRECTIONS.UP);
   assert.equal(DEFAULTS.afterEffect, AFTER_EFFECTS.HIDE);
-  assert.equal(DEFAULTS.dissolveDuration, 3.2);
+  assert.equal(DEFAULTS.dissolveDuration, 5.5);
   assert.equal(DEFAULTS.particleColor, "#0a0a0a");
 });
