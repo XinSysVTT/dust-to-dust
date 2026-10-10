@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| Module version | 0.1.0 |
+| Module version | 0.1.2 |
 | Foundry VTT | v14 (minimum 14.366, verified 14.368) |
 | First-class system | [Crucible](https://github.com/XinSysVTT/crucible) 0.10+ |
 | Other systems | Generic adapter (core `dead` status / common HP paths) |
@@ -18,7 +18,7 @@ When a token dies — or when you tell it to — Dust to Dust plays one effect a
 2. **Dust** — particles spawn exactly at the crumbling front, sampled from the token's actual artwork: they drift loose for a moment, then the wind takes over, wobbling with turbulence. About one particle in five is a long-lived wisp that trails behind the main cloud.
 3. **Aftermath** — the token is hidden (default), kept visible as a corpse, or deleted, depending on your setting. Deleting is GM-only and only happens if you explicitly ask for it.
 
-The total effect runs about 4.5–5 seconds on a Medium token (~950 particles at density 1.0, scaling with token size and capped for very large creatures).
+The total effect runs about 4.5–5 seconds on a Medium token (~950 particles at density 1.0, scaling with token size and capped for very large creatures). The defaults match the reference `demo.gif` pacing: a quick 2.2 s crumble with the dust trailing off in the wind.
 
 ## Install
 

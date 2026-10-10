@@ -862,6 +862,8 @@ class DissolveEffect {
 
   /** Apply the end-of-effect token mutation. Only for users who can mutate the document; never on early cancel. */
   _applyAfterEffect() {
+    if (this._afterEffectStarted) return; // finish() calls this from two paths; the mutation must fire exactly once
+    this._afterEffectStarted = true;
     const after = this.cfg.afterEffect;
     const id = String(this.doc?.id ?? "");
     if (after === AFTER_EFFECTS.SHOW) return;
@@ -871,7 +873,12 @@ class DissolveEffect {
         return;
       }
       if (after === AFTER_EFFECTS.HIDE) {
-        Promise.resolve(this.doc.update({ hidden: true }))
+        // animate:false is load-bearing: on a hidden change Foundry tweens the
+        // token alpha from its old value (1.0) down to the ghost alpha (0.5)
+        // over ~1s, which re-renders the full token right after the dissolve
+        // finished — the "token briefly reappears" flash. Skipping the tween
+        // snaps the ghost straight to its target alpha instead.
+        Promise.resolve(this.doc.update({ hidden: true }, { animate: false }))
           .then(() => this._endVanishWait(true))
           .catch((err) => {
             warnLog(`afterEffect "hide" failed; restoring token ${id}`, err);
