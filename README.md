@@ -14,7 +14,7 @@ A Frieren-style death animation for Foundry VTT — the body crumbles edge-to-ed
 
 ## Install
 
-1. Drop the folder in your Foundry `Data/modules/` directory (or run `npm run deploy` from *Development* below).
+1. Download the module from the [latest release](https://github.com/XinSysVTT/dust-to-dust/releases/latest) (or drop the folder in your Foundry `Data/modules/` directory).
 2. Enable **Dust to Dust** in your world's Module Settings.
 
 ## Quick start
@@ -49,17 +49,3 @@ await game.modules.get("dust-to-dust").api.play(token, {         // any setting 
 - Every death animates at most once per token; already-hidden tokens are skipped.
 - Targets Foundry v14 (14.366+) with its bundled Pixi 7.4.3; a Pixi 8 path is kept behind feature detection, and any API mismatch degrades to a plain alpha fade so the game never breaks.
 - Document mutations (hide/delete) are issued by users who own the token; other clients simply play the visuals and follow the broadcast state.
-
-## Development
-
-Plain browser ESM — no bundler, no dependencies.
-
-```bash
-npm test          # node:test suite (adapters, i18n parity, API safety)
-npm run check     # syntax check over every script
-npm run deploy    # junction this repo into a local Foundry Data/modules (FOUNDRY_DATA to override)
-```
-
-## License
-
-[MIT](LICENSE)
